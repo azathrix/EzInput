@@ -1,0 +1,25 @@
+{
+    "name": "Azathrix.EzInput",
+    "references": [
+        "Azathrix.Framework.Runtime",
+        "Azathrix.GameKit.Runtime",
+        "UniTask",
+        "Unity.InputSystem",
+        "Azathrix.EzUI"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.azathrix.ezui",
+            "expression": "",
+            "define": "EZUI_INSTALLED"
+        }
+    ],
+    "noEngineReferences": false
+}
