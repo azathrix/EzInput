@@ -446,7 +446,7 @@ namespace Azathrix.EzInput.Core
             if (!evt.blockInput)
                 return;
 
-            object source = evt.source;
+            var source = evt.source;
             if (evt.isPlaying)
             {
                 // 动画开始播放，屏蔽输入

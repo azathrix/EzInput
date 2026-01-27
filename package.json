@@ -1,7 +1,7 @@
 ﻿{
     "name": "com.azathrix.ez-input",
     "displayName": "EzInput",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "unity": "6000.3",
     "description": "\u57fa\u4e8eAzathrixFramework\u63a5\u5165InputSystem\u7684\u7ba1\u7406\u5668",
     "author": {
@@ -11,14 +11,13 @@
         "com.azathrix.framework": "0.0.8",
         "com.azathrix.game-kit": "1.0.5",
         "com.azathrix.unitask": "2.5.10",
-        "com.azathrix.ezui": "1.0.4"
+        "com.azathrix.ezui": "1.0.6"
     },
     "samples": [
         {
             "displayName": "Tests",
-            "description": "单元测试",
+            "description": "\u5355\u5143\u6d4b\u8bd5",
             "path": "Tests~"
         }
     ]
- 
 }
