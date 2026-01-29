@@ -9,13 +9,6 @@ namespace Azathrix.EzInput.Tests
     public class EnumsTests
     {
         [Test]
-        public void InputMapType_HasExpectedValues()
-        {
-            Assert.AreEqual(0, (int)InputMapType.Game);
-            Assert.AreEqual(1, (int)InputMapType.UI);
-        }
-
-        [Test]
         public void InputPlatform_HasExpectedValues()
         {
             Assert.AreEqual(0, (int)InputPlatform.Desktop);
@@ -32,21 +25,9 @@ namespace Azathrix.EzInput.Tests
         }
 
         [Test]
-        public void GameKeyCode_HasExpectedValues()
+        public void InputPlatform_Contains_Unknown()
         {
-            // 验证常用按键码存在
-            Assert.IsTrue(System.Enum.IsDefined(typeof(GameKeyCode), GameKeyCode.Move));
-            Assert.IsTrue(System.Enum.IsDefined(typeof(GameKeyCode), GameKeyCode.Jump));
-            Assert.IsTrue(System.Enum.IsDefined(typeof(GameKeyCode), GameKeyCode.Attack));
-        }
-
-        [Test]
-        public void UIKeyCode_HasExpectedValues()
-        {
-            // 验证常用 UI 按键码存在
-            Assert.IsTrue(System.Enum.IsDefined(typeof(UIKeyCode), UIKeyCode.Move));
-            Assert.IsTrue(System.Enum.IsDefined(typeof(UIKeyCode), UIKeyCode.Confirm));
-            Assert.IsTrue(System.Enum.IsDefined(typeof(UIKeyCode), UIKeyCode.Cancel));
+            Assert.IsTrue(System.Enum.IsDefined(typeof(InputPlatform), InputPlatform.Unknown));
         }
     }
 }

@@ -1,507 +1,757 @@
 using System;
+using System.Collections.Generic;
 using Azathrix.EzInput.Data;
 using Azathrix.EzInput.Enums;
 using Azathrix.EzInput.Events;
 using Azathrix.EzInput.Settings;
 using Azathrix.Framework.Core;
-using Azathrix.Framework.Events.Results;
 using Azathrix.Framework.Interfaces;
 using Azathrix.Framework.Interfaces.SystemEvents;
 using Azathrix.GameKit.Runtime.Utils;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.InputSystem;
-#if EZUI_INSTALLED
-using Azathrix.EzUI.Events;
-#endif
+using UnityEngine.InputSystem.Users;
 
 namespace Azathrix.EzInput.Core
 {
     /// <summary>
-    /// EzInput 输入系统
-    /// 负责管理游戏输入，支持输入状态控制、映射切换、按键绑定等功能
+    /// EzInput 输入系统（多玩家 / 多方案 / 多平台 / 多设备）
+    /// 说明：只管理 PlayerInput，并做事件分发与便捷封装。
     /// </summary>
-    public class EzInputSystem : ISystem, ISystemRegister, ISystemInitialize, ISystemEnabled
+    public sealed class EzInputSystem : ISystem, ISystemRegister, ISystemInitialize, ISystemEnabled
     {
-        private PlayerInput _playerInput;
-        private GameObject _inputGameObject;
-        private InputPlatform _inputPlatform;
+        public const int DefaultPlayerId = 0;
+        public const int UnspecifiedPlayerId = -1;
 
-#if EZUI_INSTALLED
-        private SubscriptionResult _uiInputSchemeSubscription;
-        private SubscriptionResult _uiAnimationStateSubscription;
-        private readonly System.Collections.Generic.Dictionary<object, Token> _ownerTokenMap = new();
-        private readonly System.Collections.Generic.Dictionary<object, Token> _animationInputTokenMap = new();
-#endif
+        private readonly Dictionary<int, EzInputPlayerContext> _players = new();
+        private int _mainPlayerId = DefaultPlayerId;
+        private bool _enabled = true;
 
         /// <summary>
-        /// 系统是否启用
+        /// 系统是否启用（全局开关）
         /// </summary>
-        public bool Enabled { get; set; } = true;
-
-        /// <summary>
-        /// 输入状态（可叠加控制）
-        /// </summary>
-        public OverlayableValue<bool> InputState { get; } = new(true);
-
-        /// <summary>
-        /// 输入映射类型（可叠加控制）
-        /// </summary>
-        public OverlayableValue<InputMapType> InputMapType { get; } = new(Enums.InputMapType.Game);
-
-        /// <summary>
-        /// 游戏输入映射
-        /// </summary>
-        public InputActionMap GameMap { get; private set; }
-
-        /// <summary>
-        /// UI输入映射
-        /// </summary>
-        public InputActionMap UIMap { get; private set; }
-
-        /// <summary>
-        /// 当前输入平台
-        /// </summary>
-        public InputPlatform CurrentPlatform
+        public bool Enabled
         {
-            get => _inputPlatform;
-            private set
+            get => _enabled;
+            set
             {
-                if (_inputPlatform != value)
+                if (_enabled == value) return;
+                _enabled = value;
+                foreach (var player in _players.Values)
                 {
-                    _inputPlatform = value;
-                    AzathrixFramework.Dispatcher.Dispatch(new InputPlatformChangedEvent(value), this);
+                    player.SetSystemEnabled(_enabled);
                 }
             }
         }
 
+        /// <summary>
+        /// 主玩家 ID
+        /// </summary>
+        public int MainPlayerId => _mainPlayerId;
+
+        /// <summary>
+        /// 主玩家当前 Map
+        /// </summary>
+        public string CurrentMap => GetPlayer(_mainPlayerId)?.CurrentMap;
+
+        /// <summary>
+        /// 主玩家当前控制方案
+        /// </summary>
+        public string CurrentControlScheme => GetPlayer(_mainPlayerId)?.CurrentControlScheme;
+
+        /// <summary>
+        /// 主玩家输入状态
+        /// </summary>
+        public OverlayableValue<bool> InputState => GetPlayer(_mainPlayerId)?.InputState;
+
+        /// <summary>
+        /// 当前所有玩家 ID
+        /// </summary>
+        public IReadOnlyCollection<int> PlayerIds => _players.Keys;
+
+        private EzInputSettings Settings => EzInputSettings.Instance;
+
         public void OnRegister()
         {
-#if EZUI_INSTALLED
-            RegisterEzUIEvents();
-#endif
         }
 
         public void OnUnRegister()
         {
-            if (_playerInput != null)
+            foreach (var player in _players.Values)
             {
-                _playerInput.onControlsChanged -= OnControlsChanged;
+                player.Detach(true);
             }
-
-            if (_inputGameObject != null)
-            {
-                UnityEngine.Object.Destroy(_inputGameObject);
-                _inputGameObject = null;
-            }
-
-#if EZUI_INSTALLED
-            UnregisterEzUIEvents();
-#endif
+            _players.Clear();
         }
 
         public UniTask OnInitializeAsync()
         {
-            InputMapType.OnValueChanged += OnInputMapTypeChanged;
-            InputState.OnValueChanged += OnInputStateChanged;
-
-            var settings = EzInputSettings.Instance;
-            if (settings != null && settings.autoCreatePlayerInput && settings.inputActionAsset != null)
+            var settings = Settings;
+            if (settings != null)
             {
-                CreatePlayerInput(settings);
+                _mainPlayerId = settings.mainPlayerId;
+                if (_mainPlayerId < 0)
+                    _mainPlayerId = DefaultPlayerId;
+
+                if (settings.autoCreateMainPlayer)
+                {
+                    if (settings.autoCreatePlayerInput && settings.inputActionAsset != null)
+                        CreatePlayer(_mainPlayerId);
+                    else
+                        EnsurePlayer(_mainPlayerId);
+                }
             }
 
             return UniTask.CompletedTask;
         }
 
-        private void OnInputStateChanged(bool enabled)
-        {
-            if (_playerInput == null)
-                return;
+        #region 玩家管理
 
-            if (enabled)
-            {
-                _playerInput.ActivateInput();
-            }
-            else
-            {
-                _playerInput.DeactivateInput();
-            }
+        public bool HasPlayer(int playerId)
+        {
+            return _players.ContainsKey(ResolvePlayerId(playerId));
         }
 
-        private void CreatePlayerInput(EzInputSettings settings)
+        public PlayerInput GetPlayerInput(int playerId = UnspecifiedPlayerId)
         {
-            _inputGameObject = new GameObject("[EzInput]");
-            UnityEngine.Object.DontDestroyOnLoad(_inputGameObject);
+            return _players.TryGetValue(ResolvePlayerId(playerId), out var player) ? player.PlayerInput : null;
+        }
 
-            _playerInput = _inputGameObject.AddComponent<PlayerInput>();
-            _playerInput.actions = settings.inputActionAsset;
-            _playerInput.notificationBehavior = PlayerNotifications.InvokeCSharpEvents;
+        public InputPlatform GetPlayerPlatform(int playerId = UnspecifiedPlayerId)
+        {
+            return _players.TryGetValue(ResolvePlayerId(playerId), out var player) ? player.CurrentPlatform : InputPlatform.Unknown;
+        }
 
-            if (!string.IsNullOrEmpty(settings.defaultControlScheme))
-            {
-                _playerInput.defaultControlScheme = settings.defaultControlScheme;
-            }
+        public IReadOnlyList<InputDevice> GetPlayerDevices(int playerId = UnspecifiedPlayerId)
+        {
+            return _players.TryGetValue(ResolvePlayerId(playerId), out var player) ? player.Devices : null;
+        }
 
-            _playerInput.onControlsChanged += OnControlsChanged;
-            InitializeInputActions();
+        public EzInputPlayerContext GetPlayer(int playerId)
+        {
+            _players.TryGetValue(playerId, out var player);
+            return player;
+        }
 
-            if (settings.debugLog)
-            {
-                Debug.Log($"[EzInput] PlayerInput 已自动创建，使用 InputActionAsset: {settings.inputActionAsset.name}");
-            }
+        public void SetMainPlayer(int playerId)
+        {
+            if (playerId < 0)
+                playerId = DefaultPlayerId;
+            _mainPlayerId = playerId;
+            EnsurePlayer(playerId);
         }
 
         /// <summary>
-        /// 设置 PlayerInput 组件（外部注入）
+        /// 注册已有 PlayerInput 为指定玩家
+        /// </summary>
+        public EzInputPlayerContext RegisterPlayer(PlayerInput playerInput, int playerId = UnspecifiedPlayerId)
+        {
+            if (playerInput == null) return null;
+
+            var id = playerId >= 0 ? playerId : playerInput.playerIndex;
+            if (id < 0)
+                id = _mainPlayerId;
+
+            var player = EnsurePlayer(id);
+            player.Attach(playerInput, Settings);
+            Dispatch(new InputPlayerRegisteredEvent(id, playerInput));
+            return player;
+        }
+
+        /// <summary>
+        /// 创建并注册 PlayerInput
+        /// </summary>
+        public PlayerInput CreatePlayer(int playerId, InputActionAsset actions = null, string controlScheme = null,
+            InputDevice primaryDevice = null, InputDevice[] additionalDevices = null)
+        {
+            var settings = Settings;
+            actions ??= settings?.inputActionAsset;
+            if (actions == null)
+                return null;
+
+            var prefab = new GameObject($"PlayerInput_{playerId}_Prefab");
+            var prefabInput = prefab.AddComponent<PlayerInput>();
+            prefabInput.actions = actions;
+            if (!string.IsNullOrWhiteSpace(controlScheme))
+                prefabInput.defaultControlScheme = controlScheme;
+
+            var input = PlayerInput.Instantiate(prefab, playerId, controlScheme, -1);
+            UnityEngine.Object.Destroy(prefab);
+            if (input == null)
+                return null;
+
+            if (input.actions == null)
+                input.actions = actions;
+
+            if (primaryDevice != null && input.user.valid)
+                InputUser.PerformPairingWithDevice(primaryDevice, input.user);
+
+            UnityEngine.Object.DontDestroyOnLoad(input.gameObject);
+
+            if (additionalDevices != null && additionalDevices.Length > 0)
+                PairAdditionalDevices(input, additionalDevices);
+
+            RegisterPlayer(input, playerId);
+            return input;
+        }
+
+        /// <summary>
+        /// 移除玩家
+        /// </summary>
+        public bool RemovePlayer(int playerId, bool destroyGameObject = true)
+        {
+            if (!_players.TryGetValue(ResolvePlayerId(playerId), out var player))
+                return false;
+
+            var id = player.PlayerId;
+            player.Detach(destroyGameObject);
+            _players.Remove(id);
+            Dispatch(new InputPlayerRemovedEvent(id));
+            return true;
+        }
+
+        /// <summary>
+        /// 手动设置 PlayerInput（主玩家）
         /// </summary>
         public void SetPlayerInput(PlayerInput playerInput)
         {
-            if (_playerInput != null)
-            {
-                _playerInput.onControlsChanged -= OnControlsChanged;
-            }
+            SetPlayerInput(UnspecifiedPlayerId, playerInput);
+        }
 
-            _playerInput = playerInput;
+        /// <summary>
+        /// 手动设置 PlayerInput（指定玩家）
+        /// </summary>
+        public void SetPlayerInput(int playerId, PlayerInput playerInput)
+        {
+            if (playerInput == null) return;
+            var id = ResolvePlayerId(playerId);
+            var player = EnsurePlayer(id);
+            player.Attach(playerInput, Settings);
+            Dispatch(new InputPlayerRegisteredEvent(id, playerInput));
+        }
 
-            if (_playerInput == null)
+        private EzInputPlayerContext EnsurePlayer(int playerId)
+        {
+            if (_players.TryGetValue(playerId, out var existing))
+                return existing;
+
+            var player = new EzInputPlayerContext(this, playerId, Settings);
+            _players[playerId] = player;
+            player.SetSystemEnabled(_enabled);
+            return player;
+        }
+
+        #endregion
+
+        #region 输入状态控制（按玩家）
+
+        public Token DisableInput(int playerId = UnspecifiedPlayerId)
+        {
+            return EnsurePlayer(ResolvePlayerId(playerId)).DisableInput();
+        }
+
+        public void DisableInput(Token token, int playerId = UnspecifiedPlayerId)
+        {
+            EnsurePlayer(ResolvePlayerId(playerId)).DisableInput(token);
+        }
+
+        public void EnableInput(Token token, int playerId = UnspecifiedPlayerId)
+        {
+            EnsurePlayer(ResolvePlayerId(playerId)).EnableInput(token);
+        }
+
+        #endregion
+
+        #region Map / Scheme 控制
+
+        /// <summary>
+        /// 设置当前 Map（独占，基于 SwitchCurrentActionMap）
+        /// </summary>
+        public void SetMap(string mapName, int playerId = UnspecifiedPlayerId)
+        {
+            if (string.IsNullOrWhiteSpace(mapName))
                 return;
-
-            _playerInput.onControlsChanged += OnControlsChanged;
-            InitializeInputActions();
-        }
-
-        private void OnControlsChanged(PlayerInput input)
-        {
-            if (input.currentControlScheme == "Desktop")
-            {
-                CurrentPlatform = InputPlatform.Desktop;
-            }
-            else if (input.currentControlScheme == "Gamepad")
-            {
-                CurrentPlatform = InputPlatform.Gamepad;
-            }
-        }
-
-        private void OnInputMapTypeChanged(InputMapType mapType)
-        {
-            _playerInput?.SwitchCurrentActionMap(mapType.ToString());
-            AzathrixFramework.Dispatcher.Dispatch(new InputMapChangedEvent(mapType), this);
-        }
-
-        private void InitializeInputActions()
-        {
-            var gameKeys = Enum.GetNames(typeof(GameKeyCode));
-            var uiKeys = Enum.GetNames(typeof(UIKeyCode));
-
-            UIMap = _playerInput.actions.FindActionMap("UI");
-            if (UIMap != null)
-            {
-                foreach (var keyName in uiKeys)
-                {
-                    if (!Enum.TryParse<UIKeyCode>(keyName, out var keyCode))
-                        continue;
-
-                    var action = UIMap.FindAction(keyName);
-                    if (action == null)
-                        continue;
-
-                    BindUIAction(action, keyCode);
-                }
-            }
-
-            GameMap = _playerInput.actions.FindActionMap("Game");
-            if (GameMap != null)
-            {
-                foreach (var keyName in gameKeys)
-                {
-                    if (!Enum.TryParse<GameKeyCode>(keyName, out var keyCode))
-                        continue;
-
-                    var action = GameMap.FindAction(keyName);
-                    if (action == null)
-                        continue;
-
-                    BindGameAction(action, keyCode);
-                }
-            }
-        }
-
-        private void BindUIAction(InputAction action, UIKeyCode keyCode)
-        {
-            if (action.type == InputActionType.Button)
-            {
-                action.started += ctx => SendUIEvent(new UIKeyData(KeyState.Started, keyCode));
-                action.performed += ctx => SendUIEvent(new UIKeyData(KeyState.Performed, keyCode));
-                action.canceled += ctx => SendUIEvent(new UIKeyData(KeyState.Cancel, keyCode));
-            }
-            else if (action.type == InputActionType.Value)
-            {
-                if (action.expectedControlType == "Axis")
-                {
-                    action.started += ctx => SendUIEvent(new UIKeyData(KeyState.Started, keyCode, action.ReadValue<float>()));
-                    action.performed += ctx => SendUIEvent(new UIKeyData(KeyState.Performed, keyCode, action.ReadValue<float>()));
-                    action.canceled += ctx => SendUIEvent(new UIKeyData(KeyState.Cancel, keyCode, action.ReadValue<float>()));
-                }
-                else if (action.expectedControlType == "Vector2")
-                {
-                    action.started += ctx => SendUIEvent(new UIKeyData(KeyState.Started, keyCode, action.ReadValue<Vector2>()));
-                    action.performed += ctx => SendUIEvent(new UIKeyData(KeyState.Performed, keyCode, action.ReadValue<Vector2>()));
-                    action.canceled += ctx => SendUIEvent(new UIKeyData(KeyState.Cancel, keyCode, action.ReadValue<Vector2>()));
-                }
-            }
-        }
-
-        private void BindGameAction(InputAction action, GameKeyCode keyCode)
-        {
-            if (action.type == InputActionType.Button)
-            {
-                action.started += ctx => SendGameEvent(new GameKeyData(KeyState.Started, keyCode, ctx));
-                action.performed += ctx => SendGameEvent(new GameKeyData(KeyState.Performed, keyCode, ctx));
-                action.canceled += ctx => SendGameEvent(new GameKeyData(KeyState.Cancel, keyCode, ctx));
-            }
-            else if (action.type == InputActionType.Value)
-            {
-                if (action.expectedControlType == "Axis")
-                {
-                    action.started += ctx => SendGameEvent(new GameKeyData(KeyState.Started, keyCode, action.ReadValue<float>(), ctx));
-                    action.performed += ctx => SendGameEvent(new GameKeyData(KeyState.Performed, keyCode, action.ReadValue<float>(), ctx));
-                    action.canceled += ctx => SendGameEvent(new GameKeyData(KeyState.Cancel, keyCode, action.ReadValue<float>(), ctx));
-                }
-                else if (action.expectedControlType == "Vector2")
-                {
-                    action.started += ctx => SendGameEvent(new GameKeyData(KeyState.Started, keyCode, action.ReadValue<Vector2>(), ctx));
-                    action.performed += ctx => SendGameEvent(new GameKeyData(KeyState.Performed, keyCode, action.ReadValue<Vector2>(), ctx));
-                    action.canceled += ctx => SendGameEvent(new GameKeyData(KeyState.Cancel, keyCode, action.ReadValue<Vector2>(), ctx));
-                }
-                else
-                {
-                    action.started += ctx => SendGameEvent(new GameKeyData(KeyState.Started, keyCode, ctx));
-                    action.performed += ctx => SendGameEvent(new GameKeyData(KeyState.Performed, keyCode, ctx));
-                    action.canceled += ctx => SendGameEvent(new GameKeyData(KeyState.Cancel, keyCode, ctx));
-                }
-            }
-        }
-
-        #region 输入状态控制
-
-        /// <summary>
-        /// 启用输入
-        /// </summary>
-        public void EnableInput(Token token)
-        {
-            InputState.RemoveValue(token);
+            var player = EnsurePlayer(ResolvePlayerId(playerId));
+            player.SetMap(mapName);
         }
 
         /// <summary>
-        /// 禁用输入（返回令牌用于恢复）
+        /// 设置控制方案
         /// </summary>
-        public Token DisableInput()
+        public void SetControlScheme(string scheme, int playerId = UnspecifiedPlayerId)
         {
-            return InputState.SetValue(false);
-        }
-
-        /// <summary>
-        /// 使用指定令牌禁用输入
-        /// </summary>
-        public void DisableInput(Token token)
-        {
-            InputState.SetValue(token, false);
+            if (string.IsNullOrWhiteSpace(scheme))
+                return;
+            var player = EnsurePlayer(ResolvePlayerId(playerId));
+            player.SetControlScheme(scheme);
         }
 
         #endregion
 
-        #region 输入映射切换
+        #region Action 查询与状态
 
-        /// <summary>
-        /// 设置输入映射类型（返回令牌用于恢复）
-        /// </summary>
-        public Token SetMap(InputMapType type, int priority = 0)
+        public InputActionMap GetActionMap(string mapName, int playerId = UnspecifiedPlayerId)
         {
-            return InputMapType.SetValue(type, priority);
+            if (string.IsNullOrWhiteSpace(mapName))
+                return null;
+            var input = GetPlayerInput(playerId);
+            return input?.actions?.FindActionMap(mapName, false);
         }
 
-        /// <summary>
-        /// 使用指定令牌设置输入映射类型
-        /// </summary>
-        public void SetMap(Token token, InputMapType type, int priority = 0)
+        public InputAction GetAction(string mapName, string actionName, int playerId = UnspecifiedPlayerId)
         {
-            InputMapType.SetValue(token, type, priority);
+            if (string.IsNullOrWhiteSpace(actionName))
+                return null;
+
+            var input = GetPlayerInput(playerId);
+            if (input?.actions == null)
+                return null;
+
+            if (string.IsNullOrWhiteSpace(mapName))
+                return input.actions.FindAction(actionName, false);
+
+            var map = input.actions.FindActionMap(mapName, false);
+            return map?.FindAction(actionName, false);
         }
 
-        /// <summary>
-        /// 移除输入映射设置
-        /// </summary>
-        public void RemoveMap(Token token)
+        public InputAction GetAction(string actionName, int playerId = UnspecifiedPlayerId)
         {
-            InputMapType.RemoveValue(token);
+            return GetAction(null, actionName, playerId);
         }
 
-        #endregion
-
-        #region 按键绑定
-
-        /// <summary>
-        /// 设置按键绑定
-        /// </summary>
-        public void SetKeyBinding(InputMapType mapType, string jsonData)
+        public bool WasPressedThisFrame(string mapName, string actionName, int playerId = UnspecifiedPlayerId)
         {
-            var map = mapType == Enums.InputMapType.Game ? GameMap : UIMap;
+            var action = GetAction(mapName, actionName, playerId);
+            return action != null && action.WasPressedThisFrame();
+        }
+
+        public bool WasPressedThisFrame(string actionName, int playerId = UnspecifiedPlayerId)
+        {
+            return WasPressedThisFrame(null, actionName, playerId);
+        }
+
+        public bool WasReleasedThisFrame(string mapName, string actionName, int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            return action != null && action.WasReleasedThisFrame();
+        }
+
+        public bool WasReleasedThisFrame(string actionName, int playerId = UnspecifiedPlayerId)
+        {
+            return WasReleasedThisFrame(null, actionName, playerId);
+        }
+
+        public bool IsPressed(string mapName, string actionName, int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            return action != null && action.IsPressed();
+        }
+
+        public bool IsPressed(string actionName, int playerId = UnspecifiedPlayerId)
+        {
+            return IsPressed(null, actionName, playerId);
+        }
+
+        public T ReadValue<T>(string mapName, string actionName, int playerId = UnspecifiedPlayerId) where T : struct
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            return action != null ? action.ReadValue<T>() : default;
+        }
+
+        public T ReadValue<T>(string actionName, int playerId = UnspecifiedPlayerId) where T : struct
+        {
+            return ReadValue<T>(null, actionName, playerId);
+        }
+
+        public IReadOnlyList<string> GetMapNames(int playerId = UnspecifiedPlayerId)
+        {
+            var input = GetPlayerInput(playerId);
+            if (input?.actions == null)
+                return Array.Empty<string>();
+
+            var maps = input.actions.actionMaps;
+            var result = new List<string>(maps.Count);
+            for (int i = 0; i < maps.Count; i++)
+            {
+                if (maps[i] != null)
+                    result.Add(maps[i].name);
+            }
+            return result;
+        }
+
+        public IReadOnlyList<string> GetActionNames(string mapName, int playerId = UnspecifiedPlayerId)
+        {
+            var map = GetActionMap(mapName, playerId);
             if (map == null)
+                return Array.Empty<string>();
+
+            var actions = map.actions;
+            var result = new List<string>(actions.Count);
+            for (int i = 0; i < actions.Count; i++)
+            {
+                if (actions[i] != null)
+                    result.Add(actions[i].name);
+            }
+            return result;
+        }
+
+        public IReadOnlyList<string> GetControlSchemes(int playerId = UnspecifiedPlayerId)
+        {
+            var input = GetPlayerInput(playerId);
+            if (input?.actions == null)
+                return Array.Empty<string>();
+
+            var schemes = input.actions.controlSchemes;
+            var result = new List<string>(schemes.Count);
+            for (int i = 0; i < schemes.Count; i++)
+            {
+                result.Add(schemes[i].name);
+            }
+            return result;
+        }
+
+        #endregion
+
+        #region 绑定与重绑
+
+        public void ApplyBindingOverride(string mapName, string actionName, string bindingPath, int bindingIndex = -1,
+            int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
                 return;
 
-            if (!string.IsNullOrEmpty(jsonData))
-            {
-                map.LoadBindingOverridesFromJson(jsonData);
-            }
+            if (bindingIndex >= 0)
+                action.ApplyBindingOverride(bindingIndex, bindingPath);
             else
-            {
-                map.RemoveAllBindingOverrides();
-            }
+                action.ApplyBindingOverride(bindingPath);
         }
 
-        /// <summary>
-        /// 获取按键绑定
-        /// </summary>
-        public string GetKeyBinding(InputMapType mapType)
+        public void ApplyBindingOverride(string actionName, string bindingPath, int bindingIndex = -1,
+            int playerId = UnspecifiedPlayerId)
         {
-            var map = mapType == Enums.InputMapType.Game ? GameMap : UIMap;
-            return map?.SaveBindingOverridesAsJson();
+            ApplyBindingOverride(null, actionName, bindingPath, bindingIndex, playerId);
+        }
+
+        public void ApplyBindingOverrideForScheme(string mapName, string actionName, string bindingPath,
+            string schemeName = null, string bindingNameOrPath = null, int bindingIndex = -1,
+            int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return;
+
+            var index = ResolveBindingIndex(action, schemeName, bindingNameOrPath, bindingIndex, playerId);
+            if (index < 0)
+                return;
+
+            action.ApplyBindingOverride(index, bindingPath);
+        }
+
+        public void RemoveBindingOverride(string mapName, string actionName, int bindingIndex = -1,
+            int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return;
+
+            if (bindingIndex >= 0)
+                action.RemoveBindingOverride(bindingIndex);
+            else
+                action.RemoveAllBindingOverrides();
+        }
+
+        public void RemoveBindingOverride(string actionName, int bindingIndex = -1, int playerId = UnspecifiedPlayerId)
+        {
+            RemoveBindingOverride(null, actionName, bindingIndex, playerId);
+        }
+
+        public void RemoveBindingOverrideForScheme(string mapName, string actionName, string schemeName = null,
+            string bindingNameOrPath = null, int bindingIndex = -1, int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return;
+
+            var index = ResolveBindingIndex(action, schemeName, bindingNameOrPath, bindingIndex, playerId);
+            if (index < 0)
+                return;
+
+            action.RemoveBindingOverride(index);
+        }
+
+        public string SaveBindingOverrides(int playerId = UnspecifiedPlayerId)
+        {
+            var input = GetPlayerInput(playerId);
+            return input?.actions != null ? input.actions.SaveBindingOverridesAsJson() : null;
+        }
+
+        public void LoadBindingOverrides(string json, int playerId = UnspecifiedPlayerId)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return;
+            var input = GetPlayerInput(playerId);
+            input?.actions?.LoadBindingOverridesFromJson(json);
+        }
+
+        public InputActionRebindingExtensions.RebindingOperation StartRebind(string mapName, string actionName,
+            int bindingIndex = -1, int playerId = UnspecifiedPlayerId, Action onComplete = null, Action onCancel = null)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return null;
+
+            var operation = action.PerformInteractiveRebinding(bindingIndex);
+            if (onComplete != null)
+                operation.OnComplete(_ => onComplete());
+            if (onCancel != null)
+                operation.OnCancel(_ => onCancel());
+            operation.Start();
+            return operation;
+        }
+
+        public InputActionRebindingExtensions.RebindingOperation StartRebind(string actionName, int bindingIndex = -1,
+            int playerId = UnspecifiedPlayerId, Action onComplete = null, Action onCancel = null)
+        {
+            return StartRebind(null, actionName, bindingIndex, playerId, onComplete, onCancel);
+        }
+
+        public InputActionRebindingExtensions.RebindingOperation StartRebindForScheme(string mapName, string actionName,
+            string schemeName = null, string bindingNameOrPath = null, int bindingIndex = -1,
+            int playerId = UnspecifiedPlayerId, Action onComplete = null, Action onCancel = null)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return null;
+
+            var index = ResolveBindingIndex(action, schemeName, bindingNameOrPath, bindingIndex, playerId);
+            if (index < 0)
+                return null;
+
+            return StartRebind(mapName, actionName, index, playerId, onComplete, onCancel);
+        }
+
+        public IReadOnlyList<int> GetBindingIndicesForScheme(string mapName, string actionName, string schemeName = null,
+            bool includeCompositeParts = true, bool includeComposites = false, int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return Array.Empty<int>();
+
+            var group = ResolveBindingGroup(schemeName, playerId);
+            return CollectBindingIndices(action, group, includeCompositeParts, includeComposites);
+        }
+
+        public string GetBindingDisplayStringForScheme(string mapName, string actionName, string schemeName = null,
+            string bindingNameOrPath = null, int bindingIndex = -1, int playerId = UnspecifiedPlayerId)
+        {
+            var action = GetAction(mapName, actionName, playerId);
+            if (action == null)
+                return null;
+
+            var index = ResolveBindingIndex(action, schemeName, bindingNameOrPath, bindingIndex, playerId);
+            if (index < 0)
+                return null;
+
+            return action.GetBindingDisplayString(index);
         }
 
         #endregion
 
-        #region 事件分发
+        #region 内部事件分发
 
-        /// <summary>
-        /// 发送游戏按键事件
-        /// </summary>
-        public void SendGameEvent(GameKeyData data)
+        internal void Dispatch<T>(T evt) where T : struct
         {
-            if (!InputState.Value)
-                return;
-
-            AzathrixFramework.Dispatcher.Dispatch(new GameKeyEvent(data), this);
+            AzathrixFramework.Dispatcher.Dispatch(evt, this);
         }
 
-        /// <summary>
-        /// 发送UI按键事件
-        /// </summary>
-        public void SendUIEvent(UIKeyData data)
+        internal void DispatchAction(int playerId, InputActionData data)
         {
-            if (!InputState.Value)
-                return;
-
-            AzathrixFramework.Dispatcher.Dispatch(new UIKeyEvent(data), this);
+            Dispatch(new InputActionEvent(playerId, data));
         }
 
         #endregion
 
-#if EZUI_INSTALLED
-        #region EzUI 集成
+        #region 内部辅助
 
-        private void RegisterEzUIEvents()
+        internal InputPlatform ResolvePlatform(PlayerInput input)
         {
-            var dispatcher = AzathrixFramework.Dispatcher;
+            if (input == null) return InputPlatform.Unknown;
 
-            // 订阅输入方案变化事件
-            _uiInputSchemeSubscription = dispatcher.Subscribe<UIInputSchemeChanged>(OnUIInputSchemeChanged);
-
-            // 订阅动画状态变化事件
-            _uiAnimationStateSubscription = dispatcher.Subscribe<UIAnimationStateChanged>(OnUIAnimationStateChanged);
-        }
-
-        private void UnregisterEzUIEvents()
-        {
-            _uiInputSchemeSubscription.Unsubscribe();
-            _uiAnimationStateSubscription.Unsubscribe();
-
-            // 清理所有动画相关的输入屏蔽令牌
-            foreach (var token in _animationInputTokenMap.Values)
+            var devices = input.devices;
+            if (devices.Count > 0)
             {
-                if (token.IsValid)
-                    EnableInput(token);
-            }
-            _animationInputTokenMap.Clear();
-        }
-
-        private void OnUIInputSchemeChanged(ref UIInputSchemeChanged evt)
-        {
-            // 根据 UI 输入方案切换输入映射
-            // 显式转换为 object 以避免对 GameKit 的编译时依赖
-            object source = evt.source;
-            if (evt.current == "UI" || evt.current == "Menu")
-            {
-                SetMap(source, Enums.InputMapType.UI, evt.count);
-            }
-            else if (evt.current == "Game" || string.IsNullOrEmpty(evt.current))
-            {
-                RemoveMap(source);
-            }
-        }
-
-        private void OnUIAnimationStateChanged(ref UIAnimationStateChanged evt)
-        {
-            // 如果不需要屏蔽输入，直接返回
-            if (!evt.blockInput)
-                return;
-
-            var source = evt.source;
-            if (evt.isPlaying)
-            {
-                // 动画开始播放，屏蔽输入
-                if (!_animationInputTokenMap.ContainsKey(source))
+                for (int i = 0; i < devices.Count; i++)
                 {
-                    var token = DisableInput();
-                    _animationInputTokenMap[source] = token;
+                    if (devices[i] is Gamepad)
+                        return InputPlatform.Gamepad;
+                }
+
+                for (int i = 0; i < devices.Count; i++)
+                {
+                    if (devices[i] is Touchscreen)
+                        return InputPlatform.Touch;
+                }
+
+                for (int i = 0; i < devices.Count; i++)
+                {
+                    if (devices[i] is Keyboard || devices[i] is Mouse)
+                        return InputPlatform.Desktop;
                 }
             }
-            else
-            {
-                // 动画播放结束，恢复输入
-                if (_animationInputTokenMap.TryGetValue(source, out var token))
-                {
-                    EnableInput(token);
-                    _animationInputTokenMap.Remove(source);
-                }
-            }
+
+            var scheme = input.currentControlScheme ?? string.Empty;
+            if (scheme.Contains("Gamepad", StringComparison.OrdinalIgnoreCase))
+                return InputPlatform.Gamepad;
+            if (scheme.Contains("Touch", StringComparison.OrdinalIgnoreCase) || scheme.Contains("Mobile", StringComparison.OrdinalIgnoreCase))
+                return InputPlatform.Touch;
+            if (scheme.Contains("Desktop", StringComparison.OrdinalIgnoreCase) || scheme.Contains("Keyboard", StringComparison.OrdinalIgnoreCase))
+                return InputPlatform.Desktop;
+
+            return InputPlatform.Unknown;
         }
 
-        /// <summary>
-        /// 使用对象作为 owner 设置输入映射
-        /// </summary>
-        private Token SetMap(object owner, InputMapType type, int priority = 0)
+        private void PairAdditionalDevices(PlayerInput input, InputDevice[] devices)
         {
-            if (owner != null && _ownerTokenMap.TryGetValue(owner, out var existingToken))
-            {
-                InputMapType.SetValue(existingToken, type, priority);
-                return existingToken;
-            }
-
-            var token = InputMapType.SetValue(type, priority);
-            if (owner != null)
-            {
-                _ownerTokenMap[owner] = token;
-            }
-            return token;
-        }
-
-        /// <summary>
-        /// 使用对象作为 owner 移除输入映射
-        /// </summary>
-        private void RemoveMap(object owner)
-        {
-            if (owner == null)
+            if (input == null || devices == null || devices.Length == 0)
                 return;
 
-            if (_ownerTokenMap.TryGetValue(owner, out var token))
+            if (!input.user.valid)
+                return;
+
+            for (int i = 0; i < devices.Length; i++)
             {
-                InputMapType.RemoveValue(token);
-                _ownerTokenMap.Remove(owner);
+                var device = devices[i];
+                if (device == null) continue;
+                InputUser.PerformPairingWithDevice(device, input.user);
             }
+        }
+
+        private string ResolveBindingGroup(string schemeName, int playerId)
+        {
+            if (string.IsNullOrWhiteSpace(schemeName))
+            {
+                var player = GetPlayer(ResolvePlayerId(playerId));
+                schemeName = player?.CurrentControlScheme ?? player?.PlayerInput?.currentControlScheme;
+            }
+
+            if (string.IsNullOrWhiteSpace(schemeName))
+                return null;
+
+            var input = GetPlayerInput(playerId);
+            var asset = input?.actions;
+            if (asset == null)
+                return schemeName;
+
+            var schemes = asset.controlSchemes;
+            for (int i = 0; i < schemes.Count; i++)
+            {
+                if (string.Equals(schemes[i].name, schemeName, StringComparison.OrdinalIgnoreCase))
+                    return schemes[i].bindingGroup;
+            }
+
+            return schemeName;
+        }
+
+        private int ResolveBindingIndex(InputAction action, string schemeName, string bindingNameOrPath, int bindingIndex,
+            int playerId)
+        {
+            if (bindingIndex >= 0)
+                return bindingIndex;
+
+            var group = ResolveBindingGroup(schemeName, playerId);
+            var includeParts = !string.IsNullOrWhiteSpace(bindingNameOrPath);
+            var indices = CollectBindingIndices(action, group, includeParts, false);
+            if (!string.IsNullOrWhiteSpace(bindingNameOrPath))
+            {
+                for (int i = 0; i < indices.Count; i++)
+                {
+                    var index = indices[i];
+                    if (BindingNameOrPathMatches(action, index, bindingNameOrPath))
+                        return index;
+                }
+            }
+
+            return indices.Count > 0 ? indices[0] : -1;
+        }
+
+        private static List<int> CollectBindingIndices(InputAction action, string group, bool includeCompositeParts,
+            bool includeComposites)
+        {
+            var list = new List<int>();
+            if (action == null)
+                return list;
+
+            var bindings = action.bindings;
+            bool hasGroups = false;
+            for (int i = 0; i < bindings.Count; i++)
+            {
+                var binding = bindings[i];
+                if (!string.IsNullOrWhiteSpace(binding.groups))
+                    hasGroups = true;
+                if (!includeComposites && binding.isComposite)
+                    continue;
+                if (!includeCompositeParts && binding.isPartOfComposite)
+                    continue;
+                if (!BindingMatchesGroup(binding, group))
+                    continue;
+                list.Add(i);
+            }
+
+            if (list.Count == 0 && !string.IsNullOrWhiteSpace(group) && !hasGroups)
+            {
+                for (int i = 0; i < bindings.Count; i++)
+                {
+                    var binding = bindings[i];
+                    if (!includeComposites && binding.isComposite)
+                        continue;
+                    if (!includeCompositeParts && binding.isPartOfComposite)
+                        continue;
+                    list.Add(i);
+                }
+            }
+
+            return list;
+        }
+
+        private static bool BindingMatchesGroup(InputBinding binding, string group)
+        {
+            if (string.IsNullOrWhiteSpace(group))
+                return true;
+            if (string.IsNullOrWhiteSpace(binding.groups))
+                return false;
+
+            var groups = binding.groups.Split(';');
+            for (int i = 0; i < groups.Length; i++)
+            {
+                if (string.Equals(groups[i].Trim(), group, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool BindingNameOrPathMatches(InputAction action, int index, string bindingNameOrPath)
+        {
+            if (action == null || index < 0 || index >= action.bindings.Count || string.IsNullOrWhiteSpace(bindingNameOrPath))
+                return false;
+
+            var binding = action.bindings[index];
+            if (!string.IsNullOrWhiteSpace(binding.name) &&
+                string.Equals(binding.name, bindingNameOrPath, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var path = !string.IsNullOrWhiteSpace(binding.effectivePath) ? binding.effectivePath : binding.path;
+            return !string.IsNullOrWhiteSpace(path) &&
+                   string.Equals(path, bindingNameOrPath, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private int ResolvePlayerId(int playerId)
+        {
+            return playerId < 0 ? _mainPlayerId : playerId;
         }
 
         #endregion
-#endif
     }
 }

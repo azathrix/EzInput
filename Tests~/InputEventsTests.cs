@@ -11,30 +11,24 @@ namespace Azathrix.EzInput.Tests
     public class InputEventsTests
     {
         [Test]
-        public void GameKeyEvent_StoresData()
+        public void InputActionEvent_StoresData()
         {
-            var data = new GameKeyData(KeyState.Performed, GameKeyCode.Jump, default);
-            var evt = new GameKeyEvent(data);
+            var data = new InputActionData("UI", "Submit", KeyState.Performed, default);
+            var evt = new InputActionEvent(1, data);
 
-            Assert.AreEqual(data.State, evt.Data.State);
-            Assert.AreEqual(data.Code, evt.Data.Code);
+            Assert.AreEqual(1, evt.PlayerId);
+            Assert.AreEqual("UI", evt.Data.MapName);
+            Assert.AreEqual("Submit", evt.Data.ActionName);
+            Assert.AreEqual(KeyState.Performed, evt.Data.State);
         }
 
         [Test]
-        public void UIKeyEvent_StoresData()
+        public void InputMapChangedEvent_StoresMapNames()
         {
-            var data = new UIKeyData(KeyState.Started, UIKeyCode.Confirm);
-            var evt = new UIKeyEvent(data);
-
-            Assert.AreEqual(data.State, evt.Data.State);
-            Assert.AreEqual(data.Code, evt.Data.Code);
-        }
-
-        [Test]
-        public void InputMapChangedEvent_StoresMapType()
-        {
-            var evt = new InputMapChangedEvent(InputMapType.UI);
-            Assert.AreEqual(InputMapType.UI, evt.MapType);
+            var evt = new InputMapChangedEvent(2, "Game", "UI");
+            Assert.AreEqual(2, evt.PlayerId);
+            Assert.AreEqual("Game", evt.PreviousMap);
+            Assert.AreEqual("UI", evt.CurrentMap);
         }
 
         [Test]

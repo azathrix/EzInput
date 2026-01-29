@@ -10,8 +10,7 @@
     "dependencies": {
         "com.azathrix.framework": "0.0.8",
         "com.azathrix.game-kit": "1.0.5",
-        "com.azathrix.unitask": "2.5.10",
-        "com.azathrix.ezui": "1.0.6"
+        "com.azathrix.unitask": "2.5.10"
     },
     "samples": [
         {

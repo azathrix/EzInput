@@ -13,6 +13,16 @@ namespace Azathrix.EzInput.Enums
         /// <summary>
         /// 手柄
         /// </summary>
-        Gamepad
+        Gamepad,
+
+        /// <summary>
+        /// 触摸
+        /// </summary>
+        Touch,
+
+        /// <summary>
+        /// 未知
+        /// </summary>
+        Unknown
     }
 }

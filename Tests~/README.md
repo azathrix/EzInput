@@ -31,8 +31,6 @@
   - 移除/清空时触发
 
 ### 数据结构测试
-- **UIKeyDataTests** - UI 按键数据测试
-- **GameKeyDataTests** - 游戏按键数据测试
 - **InputEventsTests** - 输入事件结构测试
 
 ### 枚举测试
