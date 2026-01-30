@@ -1,23 +1,22 @@
-using Azathrix.EzInput.Enums;
 using UnityEngine.InputSystem;
 
 namespace Azathrix.EzInput.Data
 {
     /// <summary>
-    /// 输入动作数据（基于 InputActionAsset）
+    /// 输入动作数据
     /// </summary>
     public struct InputActionData
     {
         public string MapName;
         public string ActionName;
-        public KeyState State;
+        public InputActionPhase Phase;
         public InputAction.CallbackContext Context;
 
-        public InputActionData(string mapName, string actionName, KeyState state, InputAction.CallbackContext context)
+        public InputActionData(string mapName, string actionName, InputActionPhase phase, InputAction.CallbackContext context)
         {
             MapName = mapName;
             ActionName = actionName;
-            State = state;
+            Phase = phase;
             Context = context;
         }
 

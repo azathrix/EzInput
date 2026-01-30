@@ -2,7 +2,9 @@
     "name": "Azathrix.EzInput.Tests",
     "references": [
         "Azathrix.EzInput",
+        "Azathrix.Framework.Runtime",
         "Azathrix.GameKit.Runtime",
+        "UniTask",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
         "Unity.InputSystem",
