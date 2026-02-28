@@ -1,28 +1,23 @@
 {
     "name": "Azathrix.EzInput.Tests",
+    "rootNamespace": "Azathrix.EzInput.Tests",
     "references": [
         "Azathrix.EzInput",
         "Azathrix.Framework.Runtime",
         "Azathrix.GameKit.Runtime",
         "UniTask",
         "UnityEngine.TestRunner",
-        "UnityEditor.TestRunner",
         "Unity.InputSystem",
         "Unity.InputSystem.TestFramework"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
-    "overrideReferences": true,
-    "precompiledReferences": [
-        "nunit.framework.dll"
-    ],
-    "autoReferenced": false,
-    "defineConstraints": [
-        "UNITY_INCLUDE_TESTS"
-    ],
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
     "versionDefines": [],
-    "noEngineReferences": false
+    "noEngineReferences": false,
+    "testAssemblies": true
 }

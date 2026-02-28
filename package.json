@@ -1,9 +1,9 @@
-{
+﻿{
     "name": "com.azathrix.ez-input",
     "displayName": "EzInput",
-    "version": "2.0.0",
+    "version": "1.0.3",
     "unity": "6000.3",
-    "description": "对 Unity PlayerInput 的封装和事件分发",
+    "description": "\u5bf9 Unity PlayerInput \u7684\u5c01\u88c5\u548c\u4e8b\u4ef6\u5206\u53d1",
     "author": {
         "name": "Azathrix"
     },
@@ -15,7 +15,7 @@
     "samples": [
         {
             "displayName": "Tests",
-            "description": "单元测试",
+            "description": "\u5355\u5143\u6d4b\u8bd5",
             "path": "Tests~"
         }
     ]

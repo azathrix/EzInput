@@ -27,7 +27,7 @@ namespace Azathrix.EzInput.Core
         // Map 管理（支持多对象设置）
         private OverlayableValue<string> _mapState;
         
-        private string _currentMap;
+        private string _currentMap = "Game";
         private string _currentControlScheme;
 
         // 事件钩子状态
@@ -52,7 +52,7 @@ namespace Azathrix.EzInput.Core
         /// <summary>
         /// 当前 Map
         /// </summary>
-        public string CurrentMap => _mapState.Value;
+        public string CurrentMap => _currentMap;
 
         /// <summary>
         /// 当前控制方案
@@ -68,14 +68,14 @@ namespace Azathrix.EzInput.Core
 
         public UniTask OnInitializeAsync()
         {
-            var defaultMap = EzInputSettings.Instance?.defaultMap ?? "Game";
-            _mapState = new OverlayableValue<string>(defaultMap);
-            _currentMap = defaultMap;
-            
             _settings = EzInputSettings.Instance;
+            _currentMap = _settings?.defaultMap ?? "Game";
+
+            // 初始化 Map 状态管理器
+            _mapState = new OverlayableValue<string>(_currentMap);
+
             if (_settings != null)
             {
-                _currentMap = _settings.defaultMap ?? "Game";
                 _currentControlScheme = _settings.defaultControlScheme;
 
                 if (_settings.autoCreatePlayerInput && _settings.inputActionAsset != null)
@@ -83,13 +83,16 @@ namespace Azathrix.EzInput.Core
                     CreatePlayerInput();
                 }
             }
+
+            // 订阅状态变化事件
+            _inputState.OnValueChanged += OnInputStateChanged;
+            _mapState.OnValueChanged += OnMapStateChanged;
+
             return UniTask.CompletedTask;
         }
 
         public void OnRegister()
         {
-            _inputState.OnValueChanged += OnInputStateChanged;
-            _mapState.OnValueChanged += OnMapStateChanged;
         }
 
         public void OnUnRegister()
